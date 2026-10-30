@@ -127,6 +127,17 @@ Card("A few questions first", [Form([
 \`\`\`
 Before you send a reply: any markdown table, pasted output or list of findings in it becomes \`\`\`ui.`;
 
+export const RELIABILITY_INSTRUCTIONS = `# Inline UI reliability
+One syntax mistake inside a block turns that block into a single error card; blocks are independent, but no one compiles the reply before it renders. Every rule here exists because a render actually failed:
+1. Exactly one top-level Card per block; children wrap only in Row, Stack, Tabs, Grid, Details or Carousel. Never put a Card inside Chart, Metric, Badge or any leaf component.
+2. Declare every state variable on its own line before any use, even for \$note = "": Slider, Stepper, Toggle, Choice, Radio, Checklist, Select, Input, TextArea, DateInput, Swatches, OptionCards, EditableTable and Rating all bind state, and Checklist state starts as \$picks = [].
+3. Count delimiters before sending, inside out: strings, then arrays, then calls. A missing closer hides inside six-element arrays; one stray prose sentence inside an array kills the card just as dead: elements are only components, variables, literals or splats.
+4. Named arguments exist only as documented and are lowercase (label, route, submit, variant, tone, title, columns, xLabel, yLabel). An invented or capitalized one (Columns:) is a parse error. Check positional order too: Gauge's second argument is min, a number, not a label string.
+5. Calendar events must fall inside the displayed month; DateInput takes yyyy-mm-dd; Quiz answer is the option index; Chart series is [numbers], {Name: [numbers]} or {Name: {values: [numbers], tone?, dashed?}}, never a list of records.
+6. No prose, fragments or hard-wiring after the closing ) of the outer Card(...): the last characters of a block are that ) and the closing fence.
+7. When a render error is reported, fix only the failing card: re-send it minimal (no tabs-of-tabs, no splats into components, no long chains mixing ?. and ternaries), verify it renders, then restore richness one step at a time. Never re-send the whole deck for one broken card.
+`;
+
 export const WEB_LOOKUPS_OFF =
   "Web lookups are off in this plugin's settings: ImageSearch, Map, Gallery {query} and https images won't load; use workspace files.";
 
@@ -140,6 +151,7 @@ export function buildFullInstructions(webLookups: boolean, extraFolders: readonl
     UI_REFERENCE,
     ...(extraFolders.length > 0 ? [`Load, Snippet and Image also read absolute paths under: ${extraFolders.join(", ")}.`] : []),
     UI_REFERENCE_MORE,
+    RELIABILITY_INSTRUCTIONS,
     CODE_WORK_INSTRUCTIONS,
     webLookups ? AGENT_INSTRUCTIONS : AGENT_INSTRUCTIONS_WEB_OFF,
   ].join("\n\n");

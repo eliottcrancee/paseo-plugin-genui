@@ -528,7 +528,22 @@ const Interpreter = defineClass(
           break;
         case "series": {
           const isNumbers = (item: Value) => isList(item) && item.every((n) => typeof n === "number" || n === null);
-          if (isNumbers(value) || (isPlainObject(value) && Object.values(value).every(isNumbers))) return value;
+          // {name: [numbers]} and the styled form {name: {values, tone?, dashed?}} both read.
+          const isEntry = (item: Value): boolean => {
+            if (!isPlainObject(item)) return false;
+            const entry: PlainObject = item;
+            return (
+              isNumbers(entry.values) &&
+              (entry.tone === undefined || typeof entry.tone === "string") &&
+              (entry.dashed === undefined || typeof entry.dashed === "boolean")
+            );
+          };
+          if (
+            isNumbers(value) ||
+            (isPlainObject(value) && Object.values(value).every((item) => isNumbers(item) || isEntry(item)))
+          ) {
+            return value;
+          }
           break;
         }
         case "any":

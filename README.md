@@ -4,7 +4,7 @@
 
 ![Inline Map, Calendar, and Budget UI in Paseo chat](assets/screenshot-chat.png)
 
-![Gen-UI Gallery with 86 components and 173 live examples](assets/screenshot-gallery.png)
+![Gen-UI Gallery with 86 components and 179 live examples](assets/screenshot-gallery.png)
 
 ![Interactive Playground in Paseo](assets/screenshot-playground.png)
 
@@ -12,17 +12,17 @@ Ported from [ComicBit/bb-plugin-genui](https://github.com/ComicBit/bb-plugin-gen
 
 ## Install
 
-```bash
-paseo plugin add git:anh-chu/paseo-plugin-genui
-```
-
-Or from npm:
+This repository is a fork of [anh-chu/paseo-plugin-genui](https://github.com/anh-chu/paseo-plugin-genui)
+whose chart renderer is reworked (see [Charts](#charts)). Install from here, not from npm, until those
+changes land upstream:
 
 ```bash
-paseo plugin add npm:paseo-plugin-genui
+paseo plugin add git:eliottcrancee/paseo-plugin-genui
 ```
 
-Requires Paseo 0.11.2 or later.
+Or from a clone with `paseo plugin install .`.
+
+Requires Paseo 0.13.0 or later.
 
 ## What an answer looks like
 
@@ -58,11 +58,24 @@ Paseo renders a card with a plan switch, a seat slider, and a live total. Moving
 | **Manage** | `Board` · `Roadmap` · `Status` · `Plan` · `Decision` · `Estimate` · `Environments` |
 | **Evidence** | `Acceptance` · `Compare` · `Transcript` · `Provenance` |
 
+### Charts
+
+`Chart` draws a real chart with axes, gridlines, ticks and legends on web and desktop: an SVG document inside the same sandboxed, theme-injecting iframe that runs `app` blocks, so it follows the light and dark theme and is interactive while the reply streams. Every option is a named argument, and the data stays the plain series form:
+
+```ui
+Chart("area", ["8h", "10h", "12h"], {
+  P50: [120, 98, 74],
+  P95: {values: [240, 210, 180], tone: "warn", dashed: true}
+}, unit: "ms", smooth: true, yLabel: "Latency", title: "Latency by hour", height: 240)
+```
+
+The eight types are `bar`, `line`, `area`, `pie`, `scatter`, `radar`, `funnel` and `heatmap`. Options: `stacked` (bar and area), `dashed` (all series; a series' own `dashed` wins), `orientation: "horizontal"` (bar), `donut` (pie), `smooth` (line and area), `showValues` (numbers on the marks, on by default for pie, funnel and heatmap), `height` in pixels (150–560), `title`, `xLabel` and `yLabel` (which defaults to `unit`). Colors come from your theme; there is no palette to configure. On mobile, where the sandboxed iframe is unavailable, the same chart falls back to plain bars, funnels and value rows.
+
 ## Slash commands & surfaces
 
 - `/genui [prompt]` — Teach an existing agent the Generative UI component language.
 - `/genui-demo [ComponentName]` — Insert a live interactive Gen-UI block into the current chat (e.g. `/genui-demo Decision` or `/genui-demo Map`).
-- `/genui-gallery` — Open the **Gen-UI Gallery** screen (173 examples across all 86 components, plus a live spec Playground).
+- `/genui-gallery` — Open the **Gen-UI Gallery** screen (179 examples across all 86 components, plus a live spec Playground).
 
 ## Develop
 
@@ -75,4 +88,4 @@ paseo plugin reload genui
 
 ## License
 
-[Apache-2.0](LICENSE). Original DSL, component catalog, and gallery examples by [ComicBit](https://github.com/ComicBit/bb-plugin-genui). Excalifont is under the SIL Open Font License (`assets/fonts/Excalifont-OFL.txt`).
+[Apache-2.0](LICENSE). Original DSL, component catalog, and gallery examples by [ComicBit](https://github.com/ComicBit/bb-plugin-genui), ported to Paseo by [anh-chu](https://github.com/anh-chu/paseo-plugin-genui). Excalifont is under the SIL Open Font License (`assets/fonts/Excalifont-OFL.txt`).

@@ -1,0 +1,3 @@
+Card("Pipeline conversion", [
+  Chart("bar", ["Visits", "Trials", "Paid", "Referrals"], {Accounts: [4200, 1260, 380, 64]}, orientation: "horizontal", showValues: true, unit: "accts", height: 210, title: "Stage by stage")
+])

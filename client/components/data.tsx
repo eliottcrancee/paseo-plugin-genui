@@ -1,9 +1,11 @@
 import { Icon, copyText, useToast } from "@getpaseo/plugin/client/react-native";
 import { InlineMarkdown } from "../markdown";
-import React, { useMemo, useState } from "react";
+import { buildChartHtml, CHART_TYPES, wheelTone, type ChartSpecInfo } from "../../shared/logic/chartHtml";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { calendarLayout, calendarStats, dayLabel, readDays } from "../../shared/logic/calendarMath";
-import { percentages, pieSlices } from "../../shared/logic/chartMath";
+import { formatShare, funnelStages, percentages, pieSlices } from "../../shared/logic/chartMath";
+import { canRenderWebIframe, mountSandboxedAppIframe } from "../web";
 import { buildTree, defaultExpanded, timelineEntries, visibleRows } from "../../shared/logic/content-model";
 import {
   addMonths,
@@ -117,6 +119,13 @@ interface ParsedSeries {
   name: string;
   values: (number | null)[];
   tone: Tone;
+  dashed?: boolean;
+}
+
+/** A chart value read with its unit, the way the SVG charts print them. */
+function formatVal(v: number, unit: string): string {
+  const shown = formatNumber(v);
+  return unit ? `${shown} ${unit}` : shown;
 }
 
 function parseChartSeries(raw: unknown): ParsedSeries[] {
@@ -130,140 +139,102 @@ function parseChartSeries(raw: unknown): ParsedSeries[] {
     ];
   }
   if (isObject(raw)) {
-    const tones: Tone[] = ["info", "good", "warn", "bad", "neutral"];
+    // A series with no tone of its own takes the next wheel color, the way the SVG charts do.
     return Object.entries(raw).map(([name, entry], idx) => {
       if (Array.isArray(entry)) {
-        return {
-          name,
-          values: entry.map((v) => finiteNumber(v)),
-          tone: tones[idx % tones.length]!,
-        };
+        return { name, values: entry.map((v) => finiteNumber(v)), tone: wheelTone(idx) };
       }
       if (isObject(entry) && Array.isArray(entry.values)) {
         return {
           name,
           values: entry.values.map((v) => finiteNumber(v)),
           tone: tone(entry.tone as never),
+          dashed: entry.dashed === true,
         };
       }
-      return { name, values: [], tone: tones[idx % tones.length]! };
+      return { name, values: [], tone: wheelTone(idx) };
     });
   }
   return [];
 }
 
-export function Chart({ props }: { props: Props }) {
-  const { theme } = useUiRuntime();
-  const chartType = text(props.type) || "bar";
-  const labels = list(props.labels).map((l) => text(l));
-  const series = useMemo(() => parseChartSeries(props.series), [props.series]);
+function chartSpecInfo(props: Props, series: ParsedSeries[]): ChartSpecInfo {
+  const rawType = text(props.type);
+  const type = CHART_TYPES.find((t) => t === rawType) ?? "bar";
   const unit = optionalText(props.unit) ?? "";
-  const fmtVal = (v: number) => (unit ? `${formatNumber(v)} ${unit}`.trim() : formatNumber(v));
+  const height = Math.round(Math.min(560, Math.max(150, finiteNumber(props.height) ?? 260)));
+  const allDashed = props.dashed === true;
+  const showValuesRaw = props.showValues;
+  const showValues =
+    showValuesRaw === true
+      ? true
+      : showValuesRaw === false
+        ? false
+        : type === "pie" || type === "funnel" || type === "heatmap";
+  return {
+    type,
+    labels: list(props.labels).map((l) => text(l)),
+    series: series.map((s) => ({ name: s.name, tone: s.tone, dashed: s.dashed ?? allDashed, values: s.values })),
+    unit,
+    title: optionalText(props.title),
+    xLabel: optionalText(props.xLabel),
+    yLabel: optionalText(props.yLabel) ?? (unit || null),
+    stacked: props.stacked === true,
+    donut: props.donut === true,
+    smooth: props.smooth === true,
+    height,
+    showValues,
+    orientation: text(props.orientation) === "horizontal" ? "horizontal" : "vertical",
+  };
+}
 
-  if (series.length === 0) return <ErrorLine message="Chart series is empty" />;
+export function Chart({ props }: { props: Props }) {
+  const series = useMemo(() => parseChartSeries(props.series), [props.series]);
+  const spec = useMemo(() => (series.length === 0 ? null : chartSpecInfo(props, series)), [props, series]);
+  if (spec === null) return <ErrorLine message="Chart series is empty" />;
+  if (canRenderWebIframe()) return <ChartSandbox spec={spec} />;
+  return <ChartNative spec={spec} />;
+}
 
-  if (chartType === "pie" || chartType === "funnel") {
-    const first = series[0]!;
-    const slices = pieSlices(labels, first.values, 8);
-    const shares = percentages(slices.map((s) => s.value));
-    const maxVal = Math.max(1, ...slices.map((s) => s.value));
-    return (
-      <View style={{ gap: 8 }}>
-        {slices.map((slice, idx) => {
-          const pct = chartType === "funnel" ? Math.round((slice.value / maxVal) * 100) : shares[idx] ?? 0;
-          return (
-            <View key={`${slice.label}:${idx}`} style={{ gap: 4 }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                <Text style={{ color: theme.colors.foreground, fontSize: 12.5 }}>{slice.label}</Text>
-                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-                  {fmtVal(slice.value)} ({pct}%)
-                </Text>
-              </View>
-              <View
-                style={{
-                  height: 10,
-                  borderRadius: 5,
-                  backgroundColor: theme.colors.surface2,
-                  overflow: "hidden",
-                }}
-              >
-                <View
-                  style={{
-                    width: `${Math.max(2, Math.min(100, pct))}%`,
-                    height: "100%",
-                    backgroundColor: toneColor(theme, first.tone),
-                    borderRadius: 5,
-                  }}
-                />
-              </View>
-            </View>
-          );
-        })}
-      </View>
-    );
-  }
+/** Web/desktop: each type is a real SVG chart inside the theme-injecting sandbox iframe. */
+function ChartSandbox({ spec }: { spec: ChartSpecInfo }) {
+  const { theme } = useUiRuntime();
+  const containerRef = useRef<View>(null);
+  const [height, setHeight] = useState(spec.height);
+  const [error, setError] = useState<string | null>(null);
+  const html = useMemo(() => buildChartHtml(spec), [spec]);
+  useEffect(() => {
+    if (!containerRef.current) return;
+    setError(null);
+    return mountSandboxedAppIframe(containerRef.current, {
+      html,
+      theme,
+      height: spec.height,
+      onHeight: setHeight,
+      onError: setError,
+    });
+  }, [html, theme, spec.height]);
+  return (
+    <View style={{ width: "100%", gap: 4 }}>
+      <View ref={containerRef} style={{ width: "100%", minHeight: height }} />
+      {error !== null ? <ErrorLine message={error} /> : null}
+    </View>
+  );
+}
 
-  if (chartType === "heatmap") {
-    const allNums = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
-    const maxVal = Math.max(1, ...allNums);
-    return (
-      <ScrollView horizontal>
-        <View style={{ gap: 4 }}>
-          <View style={{ flexDirection: "row", gap: 4, paddingLeft: 80 }}>
-            {labels.map((l, idx) => (
-              <View key={idx} style={{ width: 54, alignItems: "center" }}>
-                <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
-                  {l}
-                </Text>
-              </View>
-            ))}
-          </View>
-          {series.map((row, rIdx) => (
-            <View key={rIdx} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-              <Text
-                numberOfLines={1}
-                style={{ width: 76, color: theme.colors.foregroundMuted, fontSize: 11.5 }}
-              >
-                {row.name}
-              </Text>
-              {labels.map((_, cIdx) => {
-                const v = row.values[cIdx] ?? 0;
-                const intensity = Math.max(0.12, Math.min(1, v / maxVal));
-                return (
-                  <View
-                    key={cIdx}
-                    style={{
-                      width: 54,
-                      height: 28,
-                      borderRadius: 4,
-                      backgroundColor: theme.colors.surface2,
-                      borderWidth: StyleSheet.hairlineWidth,
-                      borderColor: v > 0 ? theme.colors.accent : theme.colors.border,
-                      alignItems: "center",
-                      justifyContent: "center",
-                      opacity: v > 0 ? intensity : 0.4,
-                    }}
-                  >
-                    <Text style={{ color: theme.colors.foreground, fontSize: 11 }}>{formatNumber(v)}</Text>
-                  </View>
-                );
-              })}
-            </View>
-          ))}
-        </View>
-      </ScrollView>
-    );
-  }
-
-  const allValues = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
-  const maxAbs = Math.max(1, ...allValues.map((v) => Math.abs(v)));
-
+/** Native fallback: plain views. Bar columns and pie rows read well; the rest fall back to value rows. */
+function ChartNative({ spec }: { spec: ChartSpecInfo }) {
+  const { theme } = useUiRuntime();
+  const fmtVal = (v: number) => formatVal(v, spec.unit);
   return (
     <View style={{ gap: 10 }}>
-      {series.length > 1 ? (
+      {spec.title !== null ? (
+        <Text style={{ color: theme.colors.foreground, fontSize: 13.5, fontWeight: "600" }}>{spec.title}</Text>
+      ) : null}
+      {spec.series.length > 1 ? (
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
-          {series.map((s, idx) => (
-            <View key={idx} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          {spec.series.map((s, idx) => (
+            <View key={s.name} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               <View
                 style={{
                   width: 8,
@@ -277,49 +248,289 @@ export function Chart({ props }: { props: Props }) {
           ))}
         </View>
       ) : null}
-      <View style={{ gap: 8 }}>
-        {labels.map((label, lIdx) => (
-          <View key={`${label}:${lIdx}`} style={{ gap: 4 }}>
-            <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
-              <Text style={{ color: theme.colors.foreground, fontSize: 12.5 }}>{label}</Text>
-              <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-                {series
-                  .map((s) => {
-                    const v = s.values[lIdx];
-                    return v === null || v === undefined ? "—" : fmtVal(v);
-                  })
-                  .join(" / ")}
-              </Text>
-            </View>
-            <View style={{ gap: 3 }}>
-              {series.map((s, sIdx) => {
-                const v = s.values[lIdx] ?? 0;
-                const pct = Math.min(100, Math.max(2, Math.round((Math.abs(v) / maxAbs) * 100)));
+      {spec.type === "bar" && spec.orientation === "vertical" ? (
+        <ChartNativeColumns spec={spec} />
+      ) : spec.type === "heatmap" ? (
+        <ChartNativeHeatmap spec={spec} />
+      ) : spec.type === "pie" ? (
+        <ChartNativePie spec={spec} />
+      ) : spec.type === "funnel" ? (
+        <ChartNativeFunnel spec={spec} />
+      ) : (
+        <ChartNativeRows spec={spec} fmtVal={fmtVal} />
+      )}
+      {spec.xLabel !== null || spec.yLabel !== null ? (
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }} numberOfLines={1}>
+          {[
+            spec.yLabel !== null ? `↕ ${spec.yLabel}` : "",
+            spec.xLabel !== null ? `↔ ${spec.xLabel}` : "",
+          ]
+            .filter(Boolean)
+            .join("  ·  ")}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function ChartNativeColumns({ spec }: { spec: ChartSpecInfo }) {
+  const { theme } = useUiRuntime();
+  const boxH = 170;
+  // Grouped columns and stacked columns are two shapes of one slot, never both.
+  const stacked = spec.stacked && spec.series.length > 1;
+  const totalAt = (i: number) => spec.series.reduce((sum, s) => sum + Math.max(0, s.values[i] ?? 0), 0);
+  const extent = Math.max(
+    1,
+    ...(stacked
+      ? spec.labels.map((_, i) => totalAt(i))
+      : spec.series.flatMap((s) => s.values.map((v) => Math.max(0, v ?? 0)))),
+  );
+  const showValues = spec.showValues && spec.labels.length <= 12;
+  return (
+    <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 2 }}>
+      {spec.labels.map((label, i) => (
+        <View key={`${label}:${i}`} style={{ flex: 1, gap: 4, alignItems: "center" }}>
+          {showValues ? (
+            <Text
+              numberOfLines={1}
+              style={{ color: theme.colors.foregroundMuted, fontSize: 9, textAlign: "center" }}
+            >
+              {stacked
+                ? formatVal(totalAt(i), spec.unit)
+                : spec.series.map((s) => formatVal(s.values[i] ?? 0, spec.unit)).join(" / ")}
+            </Text>
+          ) : null}
+          <View
+            style={{
+              height: boxH,
+              width: "100%",
+              flexDirection: "row",
+              alignItems: "flex-end",
+              justifyContent: "center",
+              gap: 2,
+            }}
+          >
+            {stacked ? (
+              <View
+                style={{
+                  width: "62%",
+                  height: Math.max(2, (totalAt(i) / extent) * boxH),
+                  flexDirection: "column-reverse",
+                  justifyContent: "flex-start",
+                  borderTopLeftRadius: 3,
+                  borderTopRightRadius: 3,
+                  overflow: "hidden",
+                }}
+              >
+                {spec.series.map((s, si) => {
+                  const v = s.values[i] ?? 0;
+                  if (v <= 0) return null;
+                  return (
+                    <View
+                      key={si}
+                      style={{ height: (v / extent) * boxH, backgroundColor: toneColor(theme, s.tone) }}
+                    />
+                  );
+                })}
+              </View>
+            ) : (
+              spec.series.map((s, si) => {
+                const v = s.values[i] ?? 0;
+                if (v <= 0) return null;
                 return (
                   <View
-                    key={sIdx}
+                    key={si}
                     style={{
-                      height: series.length > 1 ? 7 : 9,
-                      borderRadius: 4,
-                      backgroundColor: theme.colors.surface2,
-                      overflow: "hidden",
+                      width: spec.series.length > 1 ? `${Math.round(74 / spec.series.length)}%` : "52%",
+                      height: Math.max(2, (v / extent) * boxH),
+                      backgroundColor: toneColor(theme, s.tone),
+                      borderTopLeftRadius: 3,
+                      borderTopRightRadius: 3,
                     }}
-                  >
-                    <View
-                      style={{
-                        width: `${pct}%`,
-                        height: "100%",
-                        backgroundColor: toneColor(theme, s.tone),
-                        borderRadius: 4,
-                      }}
-                    />
-                  </View>
+                  />
                 );
-              })}
+              })
+            )}
+          </View>
+          <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 9.5, textAlign: "center" }}>
+            {label}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function ChartNativePie({ spec }: { spec: ChartSpecInfo }) {
+  const { theme } = useUiRuntime();
+  const first = spec.series[0];
+  if (!first) return <ErrorLine message="Chart series is empty" />;
+  const slices = pieSlices(spec.labels, first.values, 8);
+  const shares = percentages(slices.map((s) => s.value));
+  return (
+    <View style={{ gap: 8 }}>
+      <View style={{ flexDirection: "row", height: 14, borderRadius: 7, overflow: "hidden" }}>
+        {slices.map((slice, i) => {
+          const share = shares[i] ?? 0;
+          return share > 0 ? (
+            <View
+              key={`${slice.label}:${i}`}
+              style={{ width: `${share}%`, backgroundColor: toneColor(theme, wheelTone(i)) }}
+            />
+          ) : null;
+        })}
+      </View>
+      {slices.map((slice, i) => (
+        <View key={`${slice.label}:${i}:row`} style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: toneColor(theme, wheelTone(i)) }} />
+            <Text style={{ color: theme.colors.foreground, fontSize: 12.5 }}>{slice.label}</Text>
+          </View>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
+            {spec.showValues ? `${formatVal(slice.value, spec.unit)} (${shares[i] ?? 0}%)` : `${shares[i] ?? 0}%`}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function ChartNativeFunnel({ spec }: { spec: ChartSpecInfo }) {
+  const { theme } = useUiRuntime();
+  const first = spec.series[0];
+  if (!first) return <ErrorLine message="Chart series is empty" />;
+  const stages = funnelStages(spec.labels, first.values);
+  const barColor = toneColor(theme, first.tone);
+  return (
+    <View style={{ gap: 8 }}>
+      {stages.map((stage, i) => (
+        <View key={`${stage.label}:${i}`} style={{ gap: 4 }}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+            <Text style={{ color: theme.colors.foreground, fontSize: 12.5 }}>{stage.label}</Text>
+            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
+              {[
+                i > 0 && stage.ofFirst !== null ? formatShare(stage.ofFirst) : "",
+                spec.showValues ? formatVal(stage.value, spec.unit) : "",
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </Text>
+          </View>
+          <View style={{ height: 12, borderRadius: 6, backgroundColor: theme.colors.surface2, overflow: "hidden" }}>
+            <View
+              style={{
+                width: `${Math.max(2, Math.min(100, stage.width * 100))}%`,
+                height: "100%",
+                backgroundColor: barColor,
+                opacity: 1 - (i / Math.max(1, stages.length - 1)) * 0.5,
+                borderRadius: 6,
+              }}
+            />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function ChartNativeHeatmap({ spec }: { spec: ChartSpecInfo }) {
+  const { theme } = useUiRuntime();
+  const labels = spec.labels;
+  const allNums = spec.series.flatMap((s) => s.values.filter((v): v is number => v !== null));
+  const maxVal = Math.max(1, ...allNums);
+  return (
+    <ScrollView horizontal>
+      <View style={{ gap: 4 }}>
+        <View style={{ flexDirection: "row", gap: 4, paddingLeft: 80 }}>
+          {labels.map((l, idx) => (
+            <View key={idx} style={{ width: 54, alignItems: "center" }}>
+              <Text numberOfLines={1} style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>
+                {l}
+              </Text>
             </View>
+          ))}
+        </View>
+        {spec.series.map((row, rIdx) => (
+          <View key={`${row.name}:${rIdx}`} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <Text numberOfLines={1} style={{ width: 76, color: theme.colors.foregroundMuted, fontSize: 11.5 }}>
+              {row.name}
+            </Text>
+            {labels.map((_, cIdx) => {
+              const v = row.values[cIdx] ?? 0;
+              const intensity = Math.max(0.12, Math.min(1, v / maxVal));
+              return (
+                <View
+                  key={cIdx}
+                  style={{
+                    width: 54,
+                    height: 28,
+                    borderRadius: 4,
+                    backgroundColor: theme.colors.surface2,
+                    borderWidth: StyleSheet.hairlineWidth,
+                    borderColor: v > 0 ? theme.colors.accent : theme.colors.border,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    opacity: v > 0 ? intensity : 0.4,
+                  }}
+                >
+                  <Text style={{ color: theme.colors.foreground, fontSize: 11 }}>{formatNumber(v)}</Text>
+                </View>
+              );
+            })}
           </View>
         ))}
       </View>
+    </ScrollView>
+  );
+}
+
+function ChartNativeRows({ spec, fmtVal }: { spec: ChartSpecInfo; fmtVal: (v: number) => string }) {
+  const { theme } = useUiRuntime();
+  const allValues = spec.series.flatMap((s) => s.values.filter((v): v is number => v !== null));
+  const maxAbs = Math.max(1, ...allValues.map((v) => Math.abs(v)));
+  return (
+    <View style={{ gap: 8 }}>
+      {spec.labels.map((label, lIdx) => (
+        <View key={`${label}:${lIdx}`} style={{ gap: 4 }}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+            <Text style={{ color: theme.colors.foreground, fontSize: 12.5 }}>{label}</Text>
+            <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
+              {spec.series
+                .map((s) => {
+                  const v = s.values[lIdx];
+                  return v === null || v === undefined ? "—" : fmtVal(v);
+                })
+                .join(" / ")}
+            </Text>
+          </View>
+          <View style={{ gap: 3 }}>
+            {spec.series.map((s, sIdx) => {
+              const v = s.values[lIdx] ?? 0;
+              const pct = Math.min(100, Math.max(2, Math.round((Math.abs(v) / maxAbs) * 100)));
+              return (
+                <View
+                  key={sIdx}
+                  style={{
+                    height: spec.series.length > 1 ? 7 : 9,
+                    borderRadius: 4,
+                    backgroundColor: theme.colors.surface2,
+                    overflow: "hidden",
+                  }}
+                >
+                  <View
+                    style={{
+                      width: `${pct}%`,
+                      height: "100%",
+                      backgroundColor: toneColor(theme, s.tone),
+                      borderRadius: 4,
+                    }}
+                  />
+                </View>
+              );
+            })}
+          </View>
+        </View>
+      ))}
     </View>
   );
 }

@@ -16,6 +16,7 @@ import { checkSpec, findFences, renderReplyMarkdown } from "./fallback";
 import {
   AGENT_INSTRUCTIONS,
   CODE_WORK_INSTRUCTIONS,
+  RELIABILITY_INSTRUCTIONS,
   UI_REFERENCE,
   UI_REFERENCE_MORE,
 } from "./instructions";
@@ -37,6 +38,7 @@ describe("paseo-plugin-genui core, instructions, and gallery", () => {
     for (const section of [
       UI_REFERENCE,
       UI_REFERENCE_MORE,
+      RELIABILITY_INSTRUCTIONS,
       CODE_WORK_INSTRUCTIONS,
       AGENT_INSTRUCTIONS,
     ]) {
@@ -307,5 +309,30 @@ describe("Draft", () => {
   it("is listed in the agent reference with a rule against markdown Code", () => {
     expect(UI_REFERENCE).toContain("Draft(markdown, title?)");
     expect(CODE_WORK_INSTRUCTIONS).toContain("Draft(markdown, title)");
+  });
+});
+
+describe("Chart", () => {
+  it("accepts a styled series entry alongside the plain one", () => {
+    const compiled = compile(
+      'Card("x", [Chart("line", ["a", "b"], {Plain: [1, 2], Styled: {values: [3, 4], tone: "warn", dashed: true}}, dashed: true, donut: false, smooth: true, height: 300, showValues: true, title: "t", xLabel: "x", yLabel: "y", orientation: "horizontal")])',
+    );
+    expect(compiled.diagnostics).toEqual([]);
+    expect(compiled.program).not.toBeNull();
+  });
+
+  it("refuses a series that is a list of records or a styled entry with no values", () => {
+    for (const bad of ['Chart("bar", ["a"], [{v: 1}])', 'Chart("bar", ["a"], {A: {tone: "warn"}})']) {
+      const compiled = compile(`Card("x", [${bad}])`);
+      expect(compiled.diagnostics, bad).toEqual([]);
+      const { diagnostics } = evaluate(compiled.program!, initialState(compiled.program!));
+      expect(diagnostics.length, bad).toBeGreaterThan(0);
+    }
+  });
+
+  it("defaults yLabel to the unit and keeps the unit inside printed values", () => {
+    // The renderer, not the compiler, applies these; the example only has to parse.
+    const compiled = compile('Card("x", [Chart("bar", ["a"], {A: [1]}, unit: "GB")])');
+    expect(compiled.diagnostics).toEqual([]);
   });
 });

@@ -1,0 +1,3 @@
+Card("Where the week's tokens went", [
+  Chart("pie", ["Chat", "Illustration", "Analysis", "Prototype"], {Tokens: [52, 23, 19, 6]}, donut: true, showValues: true, title: "Token budget", height: 250)
+])
